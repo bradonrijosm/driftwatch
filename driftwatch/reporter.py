@@ -65,3 +65,24 @@ def print_report(summary: RunSummary, stream: TextIO = sys.stdout) -> ReportStat
     report, stats = build_report(summary)
     print(report, file=stream)
     return stats
+
+
+def print_drifted(summary: RunSummary, stream: TextIO = sys.stdout) -> ReportStats:
+    """Print only drifted and errored targets to *stream* and return stats.
+
+    Useful for a concise view when most targets are clean and only failures
+    are of interest (e.g. in CI log output).
+    """
+    _, stats = build_report(summary)
+    issues = [r for r in summary.results if r.error or r.drifted]
+
+    if not issues:
+        print("DriftWatch: all targets clean.", file=stream)
+        return stats
+
+    print(f"DriftWatch: {len(issues)} issue(s) detected", file=stream)
+    print("-" * 50, file=stream)
+    for result in issues:
+        print(_status_line(result), file=stream)
+    print("-" * 50, file=stream)
+    return stats
