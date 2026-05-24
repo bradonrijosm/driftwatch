@@ -1,19 +1,17 @@
-"""Aggregate per-target status across a run summary for quick lookup."""
-
+"""Tracks the latest check status for each watched target."""
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Optional
 
-from driftwatch.checker import DriftResult
 from driftwatch.config import WatchTarget
-from driftwatch.runner import RunSummary
+from driftwatch.checker import DriftResult
 
 
-class TargetStatus(str, Enum):
+class TargetStatus(str, enum.Enum):
     CLEAN = "clean"
-    DRIFTED = "drifted"
+    DRIFT = "drift"
     ERROR = "error"
     UNKNOWN = "unknown"
 
@@ -21,43 +19,39 @@ class TargetStatus(str, Enum):
 @dataclass
 class TargetStatusEntry:
     target: WatchTarget
-    status: TargetStatus
-    detail: str = ""
+    status: TargetStatus = TargetStatus.UNKNOWN
+    last_message: str = ""
 
 
 @dataclass
 class StatusMap:
-    entries: Dict[str, TargetStatusEntry] = field(default_factory=dict)
+    """Mutable map from target local_path -> TargetStatusEntry."""
+    _entries: Dict[str, TargetStatusEntry] = field(default_factory=dict)
 
-    def get(self, local_path: str) -> TargetStatusEntry | None:
-        return self.entries.get(local_path)
+    def update(self, target: WatchTarget, result: DriftResult) -> None:
+        if result.error:
+            status = TargetStatus.ERROR
+            message = result.error
+        elif result.drifted:
+            status = TargetStatus.DRIFT
+            message = "drift detected"
+        else:
+            status = TargetStatus.CLEAN
+            message = "ok"
+        self._entries[target.local_path] = TargetStatusEntry(
+            target=target, status=status, last_message=message
+        )
+
+    def get(self, local_path: str) -> Optional[TargetStatusEntry]:
+        return self._entries.get(local_path)
+
+    def entries(self) -> List[TargetStatusEntry]:
+        return list(self._entries.values())
 
     def all_clean(self) -> bool:
-        return all(
-            e.status == TargetStatus.CLEAN for e in self.entries.values()
-        )
+        if not self._entries:
+            return True
+        return all(e.status == TargetStatus.CLEAN for e in self._entries.values())
 
-    def by_status(self, status: TargetStatus) -> List[TargetStatusEntry]:
-        return [e for e in self.entries.values() if e.status == status]
-
-
-def _classify(result: DriftResult) -> tuple[TargetStatus, str]:
-    if result.error:
-        return TargetStatus.ERROR, result.error
-    if result.drifted:
-        detail = (
-            f"local={result.local_checksum} remote={result.remote_checksum}"
-        )
-        return TargetStatus.DRIFTED, detail
-    return TargetStatus.CLEAN, ""
-
-
-def build_status_map(summary: RunSummary) -> StatusMap:
-    """Build a StatusMap from a completed RunSummary."""
-    entries: Dict[str, TargetStatusEntry] = {}
-    for target, result in zip(summary.targets, summary.results):
-        status, detail = _classify(result)
-        entries[target.local_path] = TargetStatusEntry(
-            target=target, status=status, detail=detail
-        )
-    return StatusMap(entries=entries)
+    def clear(self) -> None:
+        self._entries.clear()
