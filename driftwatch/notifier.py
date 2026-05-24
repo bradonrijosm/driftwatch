@@ -49,6 +49,31 @@ def _build_payload(result: DriftResult) -> dict:
     }
 
 
+def _post_webhook(
+    webhook_url: str,
+    payload: dict,
+    timeout: float,
+) -> tuple[bool, Optional[int], Optional[str]]:
+    """POST *payload* to *webhook_url* and return (success, status_code, error_message).
+
+    Returns a 3-tuple so that ``notify`` can stay focused on orchestration
+    rather than low-level HTTP error handling.
+    """
+    try:
+        response = httpx.post(
+            webhook_url,
+            content=json.dumps(payload),
+            headers={"Content-Type": "application/json"},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return True, response.status_code, None
+    except httpx.HTTPError as exc:
+        logger.error("Webhook delivery failed: %s", exc)
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        return False, status_code, str(exc)
+
+
 def notify(
     result: DriftResult,
     webhook_url: Optional[str] = None,
@@ -66,23 +91,15 @@ def notify(
         return NotifyResult(success=True, message=alert_text)
 
     payload = _build_payload(result)
-    try:
-        response = httpx.post(
-            webhook_url,
-            content=json.dumps(payload),
-            headers={"Content-Type": "application/json"},
-            timeout=timeout,
-        )
-        response.raise_for_status()
+    success, status_code, error_message = _post_webhook(webhook_url, payload, timeout)
+    if success:
         return NotifyResult(
             success=True,
             message=alert_text,
-            webhook_status_code=response.status_code,
+            webhook_status_code=status_code,
         )
-    except httpx.HTTPError as exc:
-        logger.error("Webhook delivery failed: %s", exc)
-        return NotifyResult(
-            success=False,
-            message=f"webhook failed: {exc}",
-            webhook_status_code=getattr(getattr(exc, "response", None), "status_code", None),
-        )
+    return NotifyResult(
+        success=False,
+        message=f"webhook failed: {error_message}",
+        webhook_status_code=status_code,
+    )
